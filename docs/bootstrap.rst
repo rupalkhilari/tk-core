@@ -126,6 +126,49 @@ Building a plugin
 ========================================
 
 
+.. code-block:: bash
+
+    #!/bin/bash
+
+    #############################################
+    # Example bash build script for automated plugin build
+    # This script will do the following:
+    #
+    # 1. download the latest toolkit core (master branch)
+    # 2. download the latest plugin repository
+    # 3. run the build script
+    #
+    # NOTE: The script connects to the toolkit app store during
+    #       execution and therefore needs you to pass in an API
+    #       script user and script key for your shotgun site.
+    #
+    #       if you omit the authentication parameters, the script
+    #       will prompt you for a login and password at runtime.
+
+    engine_name="tk-maya"
+    plugin_name="basic"
+    sg_site="https://MYSITE.shotgunstudio.com"
+    sg_script=SCRIPTNAME
+    sg_key=SCRIPTKEY
+
+    # create temp folder
+    build_folder=`mktemp -d`
+    cd $build_folder
+
+    echo "Downloading core..."
+    git clone git@github.com:shotgunsoftware/tk-core.git
+
+    echo "Downloading plugin source code..."
+    git clone git@github.com:shotgunsoftware/${engine_name}.git
+
+    echo "Building plugin..."
+    cd tk-core/developer
+    python build_plugin.py ../../${engine_name}/plugins/${plugin_name} ../../plugin_build -s ${sg_site} -n ${sg_script} -k ${sg_key}
+
+    echo "Build complete in $build_folder/plugin_build"
+    echo ""
+
+
 
 Doing plugin development
 ========================================
