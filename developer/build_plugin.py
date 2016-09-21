@@ -77,7 +77,9 @@ def _cache_descriptor(sg, desc_type, desc_dict, target_path):
     :param desc_dict: descriptor dict or uri
     :param target_path: bundle cache root to cache into
     """
-    desc = create_descriptor(sg, desc_type, desc_dict)
+    # note: in the case where we 'prime' the bundle cache with manual descriptors
+    # in the plugin source code, we need to add the target path as a fallback root.
+    desc = create_descriptor(sg, desc_type, desc_dict, fallback_roots=[target_path])
     desc.ensure_local()
     desc_size_kb = filesystem.compute_folder_size(desc.get_path()) / 1024
     logger.info("Caching %s into plugin bundle cache (size %d KiB)" % (desc, desc_size_kb))
