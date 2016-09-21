@@ -161,6 +161,10 @@ class ToolkitManager(object):
         configuration that should be used as a base fallback
         to be used whenever runtime and shotgun configuration
         resolution doesn't resolve an override configuration to use.
+
+
+        TODO -- add link to more information about this, including auto updates
+
         """
         return self._base_config_descriptor
 
