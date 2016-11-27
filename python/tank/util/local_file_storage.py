@@ -35,11 +35,12 @@ class LocalFileStorageManager(object):
     :constant CORE_V17: Indicates compatibility with Core 0.17 or earlier
     :constant CORE_V18: Indicates compatibility with Core 0.18 or later
 
-    :constant LOGGING: Indicates a path suitable for storing logs, useful for debugging
-    :constant CACHE: Indicates a path suitable for storing cache data that can be deleted without
-                       any loss of functionality or state.
-    :constant PERSISTENT: Indicates a path suitable for storing settings and other data that is needs
-                          to be retained between sessions.
+    :constant LOGGING:     Indicates a path suitable for storing logs, useful for debugging
+    :constant CACHE:       Indicates a path suitable for storing cache data that can be deleted
+                           without any loss of functionality or state.
+    :constant PERSISTENT:  Indicates a path suitable for storing data that needs
+                           to be retained between sessions.
+    :constant PREFERENCES: Indicates a path that suitable for storing settings files and preferences.
     """
     # generation of path structures
     (CORE_V17, CORE_V18) = range(2)
@@ -74,8 +75,29 @@ class LocalFileStorageManager(object):
         """
         if generation == cls.CORE_V18:
 
+            # If the environment variable is available and set to an actual value.
+            shotgun_home_override = os.environ.get("SHOTGUN_HOME")
+            if shotgun_home_override:
+
+                # Make sure environment variables and ~ are evaluated.
+                shotgun_home_override = os.path.expanduser(
+                    os.path.expandvars(shotgun_home_override)
+                )
+                # Make sure the path is an absolute path.
+                shotgun_home_override = os.path.abspath(shotgun_home_override)
+                # Root everything inside that custom path.
+                if path_type == cls.CACHE:
+                    return shotgun_home_override
+                elif path_type == cls.PERSISTENT:
+                    return os.path.join(shotgun_home_override, "data")
+                elif path_type == cls.PREFERENCES:
+                    return os.path.join(shotgun_home_override, "preferences")
+                elif path_type == cls.LOGGING:
+                    return os.path.join(shotgun_home_override, "logs")
+                else:
+                    raise ValueError("Unsupported path type!")
             # current generation of paths
-            if sys.platform == "darwin":
+            elif sys.platform == "darwin":
                 if path_type == cls.CACHE:
                     return os.path.expanduser("~/Library/Caches/Shotgun")
                 elif path_type == cls.PERSISTENT:
