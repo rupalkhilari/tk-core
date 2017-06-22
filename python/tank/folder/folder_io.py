@@ -58,10 +58,7 @@ class FolderIOReceiver(object):
         :param full_sync: Do a full sync
         :returns: A list of paths which were calculated to be created
         """        
-        path_cache = PathCache(tk)
-        
-        try:
-        
+        with PathCache(tk) as path_cache:
             # now run the path cache synchronization and see if there are any folders which 
             # should be created locally.
             remote_items = []
@@ -94,9 +91,6 @@ class FolderIOReceiver(object):
                     folders.append( i["path"] )
                 elif action == "copy":
                     folders.append( i["target_path"] )        
-
-        finally:
-            path_cache.close()
 
         return folders
         

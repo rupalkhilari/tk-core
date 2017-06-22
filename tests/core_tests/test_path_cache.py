@@ -13,7 +13,7 @@ from __future__ import with_statement
 import os
 import sys
 import time
-import pprint
+import unittest2
 import Queue
 import StringIO
 import shutil
@@ -56,9 +56,8 @@ def sync_path_cache(tk, force_full_sync=False):
     log.addHandler(handler)
     
     # Use the path cache to look up all paths associated with this entity
-    pc = path_cache.PathCache(tk)
-    pc.synchronize(force_full_sync)
-    pc.close()
+    with path_cache.PathCache(tk) as pc:
+        pc.synchronize(force_full_sync)
 
     # Do not close StringIO here, as on Python 2.5 this will cause some garbage to be printed
     # when the unit tests are complete. The SteamIO object will be gc'ed anyway, so it shouldn't
@@ -89,7 +88,7 @@ class TestInit(TestPathCache):
             self.path_cache.close()
             os.remove(self.path_cache_location)
         self.assertFalse(os.path.exists(self.path_cache_location))
-        pc = path_cache.PathCache(self.tk)
+        pc = path_cache.PathCache(self.tk).close
         pc.close()
         self.assertTrue(os.path.exists(self.path_cache_location))
 
@@ -102,11 +101,10 @@ class TestInit(TestPathCache):
     def test_db_columns(self):
         """Test that expected columns are created in db"""
         expected = ["entity_type", "entity_id", "entity_name", "root", "path", "primary_entity"]
-        self.db_cursor = self.path_cache._connection.cursor()
-        ret = self.db_cursor.execute("PRAGMA table_info(path_cache)")
-        column_names = [x[1] for x in ret.fetchall()]
+        with self.path_cache._transaction() as db_cursor:
+            ret = db_cursor.execute("PRAGMA table_info(path_cache)")
+            column_names = [x[1] for x in ret.fetchall()]
         self.assertEquals(expected, column_names)
-
 
 
 class TestAddMapping(TestPathCache):
@@ -118,9 +116,6 @@ class TestAddMapping(TestPathCache):
                        "id":1,
                        "name":"EntityName"}
 
-        # get db connection
-        self.db_cursor = self.path_cache._connection.cursor()
-
     def test_primary_path(self):
         """
         Case path to add has primary project as root.
@@ -129,8 +124,9 @@ class TestAddMapping(TestPathCache):
         full_path = os.path.join(self.project_root, relative_path)
         add_item_to_cache(self.path_cache, self.entity, full_path)
 
-        res = self.db_cursor.execute("SELECT path, root FROM path_cache WHERE entity_type = ? AND entity_id = ?", (self.entity["type"], self.entity["id"]))
-        entry = res.fetchall()[0]
+        with self.path_cache._transaction() as db_cursor:
+            res = db_cursor.execute("SELECT path, root FROM path_cache WHERE entity_type = ? AND entity_id = ?", (self.entity["type"], self.entity["id"]))
+            entry = res.fetchall()[0]
         self.assertEquals("/shot", entry[0])
         self.assertEquals("primary", entry[1])
 
@@ -154,8 +150,9 @@ class TestAddMapping(TestPathCache):
         self.assertRaises(tank.TankError, add_item_to_cache, self.path_cache, ne2, full_path)         
 
         # finally, make sure that there is exactly a single record in the db representing the path
-        res = self.db_cursor.execute("SELECT path, root FROM path_cache WHERE entity_type = ? AND entity_id = ?", (self.entity["type"], self.entity["id"]))
-        self.assertEqual( len(res.fetchall()), 1)
+        with self.path_cache._transaction() as db_cursor:
+            res = db_cursor.execute("SELECT path, root FROM path_cache WHERE entity_type = ? AND entity_id = ?", (self.entity["type"], self.entity["id"]))
+            self.assertEqual(len(res.fetchall()), 1)
         
 
 
@@ -206,10 +203,9 @@ class TestAddMapping(TestPathCache):
         self.assertEquals( paths[0], full_path)
 
         # finally, make sure that there no dupe records
-        res = self.db_cursor.execute("SELECT path, root FROM path_cache WHERE entity_type = ? AND entity_id = ?", (self.entity["type"], self.entity["id"]+3))
-        self.assertEqual( len(res.fetchall()), 1)
-
-
+        with self.path_cache._transaction() as db_cursor:
+            res = db_cursor.execute("SELECT path, root FROM path_cache WHERE entity_type = ? AND entity_id = ?", (self.entity["type"], self.entity["id"]+3))
+            self.assertEqual(len(res.fetchall()), 1)
 
     def test_non_primary_path(self):
         """
@@ -219,8 +215,9 @@ class TestAddMapping(TestPathCache):
         full_path = os.path.join(self.alt_root_1, relative_path)
         add_item_to_cache(self.path_cache, self.entity, full_path)
 
-        res = self.db_cursor.execute("SELECT path, root FROM path_cache WHERE entity_type = ? AND entity_id = ?", (self.entity["type"], self.entity["id"]))
-        entry = res.fetchall()[0]
+        with self.path_cache._transaction() as db_cursor:
+            res = db_cursor.execute("SELECT path, root FROM path_cache WHERE entity_type = ? AND entity_id = ?", (self.entity["type"], self.entity["id"]))
+            entry = res.fetchall()[0]
         self.assertEquals("/shot", entry[0])
         self.assertEquals("alternate_1", entry[1])
 
@@ -235,8 +232,9 @@ class TestAddMapping(TestPathCache):
         entity_name = "someunicode\xe8"
         add_item_to_cache(self.path_cache, {"name":entity_name, "id":entity_id, "type":entity_type}, full_path)
 
-        res = self.db_cursor.execute("SELECT entity_name FROM path_cache WHERE entity_type = ? AND entity_id = ?", (entity_type, entity_id))
-        entry = res.fetchall()[0]
+        with self.path_cache._transaction() as db_cursor:
+            res = db_cursor.execute("SELECT entity_name FROM path_cache WHERE entity_type = ? AND entity_id = ?", (entity_type, entity_id))
+            entry = res.fetchall()[0]
         self.assertEquals(entity_name, entry[0])
 
 
@@ -382,20 +380,15 @@ class TestShotgunSync(TankTestBase):
         self.schema_location = os.path.join(self.pipeline_config_root, "config", "core", "schema")
 
     def _get_path_cache(self):
-        path_cache = tank.path_cache.PathCache(self.tk)
-        c = path_cache._connection.cursor()
-        cache = list(c.execute("select * from path_cache" ))
-        c.close()
-        path_cache.close()
-        return cache
-
+        with tank.path_cache.PathCache(self.tk) as pc:
+            with pc._transaction() as c:
+                return list(c.execute("select * from path_cache"))
 
     def test_shot(self):
         """Test full and incremental path cache sync."""
         
-        path_cache = tank.path_cache.PathCache(self.tk)
-        pcl = path_cache._get_path_cache_location()
-        path_cache.close()
+        with tank.path_cache.PathCache(self.tk) as pc:
+            pcl = pc._get_path_cache_location()
         
         self.assertEqual(len(self.tk.shotgun.find(tank.path_cache.SHOTGUN_ENTITY, [])), 1)        
         self.assertEqual( len(self._get_path_cache()), 1)
@@ -504,9 +497,8 @@ class TestShotgunSync(TankTestBase):
         """Tests that the incremental sync kicks in when possible."""
 
         # get the location of the pc
-        path_cache = tank.path_cache.PathCache(self.tk)
-        pcl = path_cache._get_path_cache_location()
-        path_cache.close()
+        with tank.path_cache.PathCache(self.tk) as path_cache:
+            pcl = path_cache._get_path_cache_location()
         
         # now process the sequence level folder creation
         folder.process_filesystem_structure(self.tk, 
@@ -645,9 +637,9 @@ class TestShotgunSync(TankTestBase):
             self.tk.shotgun.create("EventLogEntry", sg_data)
 
         # now delete our path cache so that next time, a full sync is done
-        path_cache = tank.path_cache.PathCache(self.tk)
-        path_cache_location = path_cache._get_path_cache_location()
-        path_cache.close()
+        with tank.path_cache.PathCache(self.tk) as path_cache:
+            path_cache_location = path_cache._get_path_cache_location()
+
         os.remove(path_cache_location)
 
         # now because we deleted our path cache, we will do a full sync
@@ -708,8 +700,7 @@ class TestConcurrentShotgunSync(TankTestBase):
         Run full sync 20 times
         """
         try:
-            for x in range(20):
-                self.tk.synchronize_filesystem_structure(True)
+            self.tk.synchronize_filesystem_structure(True)
         except Exception, e:
             print "Exception from concurrent full sync process: %s" % e
             self._multiprocess_fail = True
@@ -917,12 +908,9 @@ class TestPathCacheDelete(TankTestBase):
         """
         # Override the SHOTGUN_HOME so that path cache is read from another location.
         with temp_env_var(SHOTGUN_HOME=os.path.join(self.tank_temp, "other_path_cache_root")):
-            pc = path_cache.PathCache(self.tk)
-            pc.synchronize()
-            try:
+            with path_cache.PathCache(self.tk) as pc:
+                pc.synchronize()
                 yield pc
-            finally:
-                pc.close()
 
     def test_simple_delete_by_paths(self):
         """

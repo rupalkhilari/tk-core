@@ -14,11 +14,13 @@ all Tank items in the file system are kept.
 
 """
 
+from __future__ import with_statement
+
 import collections
 import sqlite3
 import sys
 import os
-import pprint
+import contextlib
 import itertools
 
 # use api json to cover py 2.5
@@ -45,6 +47,7 @@ SG_PIPELINE_CONFIG_FIELD = "pipeline_configuration"
 
 log = LogManager.get_logger(__name__)
 
+
 class PathCache(object):
     """
     A global cache which holds the mapping between a shotgun entity and a location on disk.
@@ -59,9 +62,9 @@ class PathCache(object):
         
         :param tk: Toolkit API instance
         """
-        self._connection = None
         self._tk = tk
         self._sync_with_sg = tk.pipeline_configuration.get_shotgun_path_cache_enabled()
+        self._is_in_transaction = False
 
         if tk.pipeline_configuration.has_associated_data_roots():
             self._path_cache_disabled = False
@@ -71,7 +74,7 @@ class PathCache(object):
             # no primary location found. Path cache therefore does not exist!
             # go into a no-path-cache-mode
             self._path_cache_disabled = True
-    
+
     def _init_db(self):
         """
         Sets up the database
@@ -80,10 +83,9 @@ class PathCache(object):
         # will ensure that there is a valid folder and file on
         # disk, created with all the right permissions etc.
         path_cache_file = self._get_path_cache_location()
-        
+
         self._connection = sqlite3.connect(path_cache_file)
-        
-        # this is to handle unicode properly - make sure that sqlite returns 
+        # this is to handle unicode properly - make sure that sqlite returns
         # str objects for TEXT fields rather than unicode. Note that any unicode
         # objects that are passed into the database will be automatically
         # converted to UTF-8 strs, so this text_factory guarantees that any character
@@ -91,10 +93,8 @@ class PathCache(object):
         # as UTF-8 (byte string) or unicode. And in the latter case, the returned data
         # will always be unicode.
         self._connection.text_factory = str
-        
-        c = self._connection.cursor()
-        try:
-        
+
+        with self._transaction() as c:
             # get a list of tables in the current database
             ret = c.execute("SELECT name FROM main.sqlite_master WHERE type='table';")
             table_names = [x[0] for x in ret.fetchall()]
@@ -116,7 +116,6 @@ class PathCache(object):
                     
                     CREATE UNIQUE INDEX shotgun_status_id ON shotgun_status(path_cache_id);
                     """)
-                self._connection.commit()
                 
             else:
                 
@@ -124,14 +123,11 @@ class PathCache(object):
                 if "event_log_sync" not in table_names:
                     # this is a pre-0.15 setup where the path cache does not have event log sync
                     c.executescript("CREATE TABLE event_log_sync (last_id integer);")
-                    self._connection.commit()
                 
                 if "shotgun_status" not in table_names:
                     # this is a pre-0.15 setup where the path cache does not have the shotgun_status table
                     c.executescript("""CREATE TABLE shotgun_status (path_cache_id integer, shotgun_id integer);
                                        CREATE UNIQUE INDEX shotgun_status_id ON shotgun_status(path_cache_id);""")
-                    self._connection.commit()
-
                 
                 # now ensure that some key fields that have been added during the dev cycle are there
                 ret = c.execute("PRAGMA table_info(path_cache)")
@@ -149,11 +145,34 @@ class PathCache(object):
                         DROP INDEX IF EXISTS path_cache_all;
                         CREATE UNIQUE INDEX IF NOT EXISTS path_cache_all ON path_cache(entity_type, entity_id, root, path, primary_entity);
                         """)
-        
-                    self._connection.commit()
-        
-        finally:
-            c.close()
+
+    @contextlib.contextmanager
+    def _transaction(self):
+        """
+        Connects to the
+        """
+        # Allow nested calls to _transaction. In this case, we simply grant another cursor.
+        if self._is_in_transaction:
+            with self._cursor() as c:
+                yield c
+        else:
+            self._is_in_transaction = True
+            try:
+                with self._cursor() as c:
+                    yield c
+            except:
+                self._connection.rollback()
+                raise
+            else:
+                self._connection.commit()
+            finally:
+                self._is_in_transaction = False
+
+    @contextlib.contextmanager
+    def _cursor(self):
+        c = self._connection.cursor()
+        with contextlib.closing(c) as c:
+            yield c
 
     def _get_path_cache_location(self):
         """
@@ -197,8 +216,8 @@ class PathCache(object):
             if not os.path.exists(path):
                 old_umask = os.umask(0)
                 try:
-                    fh = open(path, "wb")
-                    fh.close()
+                    with open(path, "wb") as fh:
+                        fh.close()
                     os.chmod(path, 0666)
                 finally:
                     os.umask(old_umask)
@@ -271,10 +290,14 @@ class PathCache(object):
         """
         Close the database connection.
         """
-        if self._connection is not None:
-            self._connection.close()
-            self._connection = None
-                
+        self._connection.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        self.close()
+
     ############################################################################################
     # shotgun synchronization (SG data pushed into path cache database)
 
@@ -303,10 +326,7 @@ class PathCache(object):
             log.debug("Folder synchronization is turned off for this project.")
             return []
                 
-        c = self._connection.cursor()
-        
-        try:
-
+        with self._transaction() as c:
             # check if we should do a full sync
             if full_sync:
                 return self._do_full_sync(c)
@@ -396,9 +416,6 @@ class PathCache(object):
             else:
                 # should never be here
                 raise Exception("Unknown error - please contact support.")
-
-        finally:       
-            c.close()
 
     def _upload_cache_data_to_shotgun(self, data, event_log_desc):
         """
@@ -703,8 +720,6 @@ class PathCache(object):
 
         self._update_last_event_log_synced(cursor, max_event_log_id)
 
-        self._connection.commit()
-
         # run the actual sync - and at the end, inser the event_log_sync data marker
         # into the database to show where to start syncing from next time.
         return new_items
@@ -801,8 +816,6 @@ class PathCache(object):
         # value in the db, so start by clearing the table.
 
         self._update_last_event_log_synced(cursor, max_event_log_id)
-
-        self._connection.commit()
 
         return return_data
 
@@ -1121,8 +1134,7 @@ class PathCache(object):
                             "capabilities of storing path entry lookups. There is no path cache "
                             "file defined for this project.")
         
-        c = self._connection.cursor()
-        try:
+        with self._transaction() as c:
             data_for_sg = []
             
             for d in data:
@@ -1151,23 +1163,6 @@ class PathCache(object):
                 for (pc_row_id, sg_id) in sg_id_lookup.items():
                     c.execute("INSERT INTO shotgun_status(path_cache_id, shotgun_id) "
                               "VALUES(?, ?)", (pc_row_id, sg_id) )
-                    
-
-        except:
-            # error processing shotgun. Make sure we roll back the sqlite path cache
-            # transaction
-            self._connection.rollback()
-            raise
-        
-        else:
-            # Shotgun insert complete! Now we can commit path cache transaction
-            self._connection.commit()
-        
-        finally:
-            c.close()
-
-
-
 
     def _add_db_mapping(self, cursor, path, entity, primary):
         """
@@ -1217,7 +1212,7 @@ class PathCache(object):
             # secondary entity
             # in this case, it is okay with more than one record for a path
             # but we don't want to insert the exact same record over and over again
-            paths = self.get_paths(entity["type"], entity["id"], primary_only=False, cursor=cursor)
+            paths = self._get_paths(entity["type"], entity["id"], primary_only=False, cursor=cursor)
 
             if path in paths:
                 # we already have the association present in the db.
@@ -1275,9 +1270,7 @@ class PathCache(object):
 
         # use built in cursor unless specifically provided - means this
         # is part of a larger transaction
-        c = self._connection.cursor()        
-
-        try:
+        with self._transaction() as c:
             db_path = self._path_to_dbpath(relative_path)
             res = c.execute("""
                             select ss.shotgun_id 
@@ -1286,9 +1279,7 @@ class PathCache(object):
                             where pc.path = ? and pc.root = ? and pc.primary_entity = 1
                             """, (db_path, root_path))
             data = list(res)
-        finally:
-            c.close()
-        
+
         if len(data) > 1:
             # never supposed to happen!
             raise TankError("More than one entry in the path cache database for %s!" % path)
@@ -1303,59 +1294,69 @@ class PathCache(object):
         """
         Returns a list of items making up the subtree below a certain shotgun id
         Each item in the list is a dictionary with keys path and sg_id.
-        
+
         :param shotgun_id: The shotgun filesystem location id which should be unregistered.
         :returns: A list of items making up the subtree below the given id
         """
-        
-        c = self._connection.cursor()
-        # first get the path
-        res = c.execute("""SELECT pc.root, pc.path 
-                          FROM path_cache pc
-                          INNER JOIN shotgun_status ss on pc.rowid = ss.path_cache_id
-                          WHERE ss.shotgun_id = ? """, (shotgun_id, ))
-         
-        res = list(res)
-        
-        if len(res) == 0:
-            return []
-        
-        matches = []
-        
-        # returns something like [('primary', '/assets/Character/foo')]
-        root_name = res[0][0]
-        path = res[0][1]
-        # first append this match
-        root_path = self._roots.get(root_name)
-        matches.append( {"path": self._dbpath_to_path(root_path, path), "sg_id": shotgun_id } )
-                         
-        
-        # now get all paths that are child paths
-        like_path = "%s/%%" % path
-        res = c.execute("""SELECT pc.root, pc.path, ss.shotgun_id
-                          FROM path_cache pc
-                          INNER JOIN shotgun_status ss on pc.rowid = ss.path_cache_id
-                          WHERE root = ? and path like ?""", (root_name, like_path))
-        
-        for x in list(res):
-            root_name = x[0]
-            path = x[1]
-            sg_id = x[2]
+
+        with self._transaction() as c:
+            # first get the path
+            res = c.execute("""SELECT pc.root, pc.path 
+                              FROM path_cache pc
+                              INNER JOIN shotgun_status ss on pc.rowid = ss.path_cache_id
+                              WHERE ss.shotgun_id = ? """, (shotgun_id, ))
+
+            res = list(res)
+
+            if len(res) == 0:
+                return []
+
+            matches = []
+
+            # returns something like [('primary', '/assets/Character/foo')]
+            root_name = res[0][0]
+            path = res[0][1]
             # first append this match
             root_path = self._roots.get(root_name)
-            matches.append( {"path": self._dbpath_to_path(root_path, path), "sg_id": sg_id } )
-            
+            matches.append({"path": self._dbpath_to_path(root_path, path), "sg_id": shotgun_id})
+
+            # now get all paths that are child paths
+            like_path = "%s/%%" % path
+            res = c.execute("""SELECT pc.root, pc.path, ss.shotgun_id
+                              FROM path_cache pc
+                              INNER JOIN shotgun_status ss on pc.rowid = ss.path_cache_id
+                              WHERE root = ? and path like ?""", (root_name, like_path))
+
+            for x in list(res):
+                root_name = x[0]
+                path = x[1]
+                sg_id = x[2]
+                # first append this match
+                root_path = self._roots.get(root_name)
+                matches.append( {"path": self._dbpath_to_path(root_path, path), "sg_id": sg_id } )
+
         return matches
 
-
-    def get_paths(self, entity_type, entity_id, primary_only, cursor=None):
+    def get_paths(self, entity_type, entity_id, primary_only):
         """
         Returns a path given a shotgun entity (type/id pair)
 
         :param entity_type: A Shotgun entity type
         :param entity_id: A Shotgun entity id
         :param primary_only: Only return items marked as primary
-        :param cursor: Database cursor to use. If none, a new cursor will be created.
+        :returns: A path on disk
+        """
+        with self._transaction() as c:
+            return self._get_paths(entity_type, entity_id, primary_only, c)
+
+    def _get_paths(self, entity_type, entity_id, primary_only, cursor):
+        """
+        Returns a path given a shotgun entity (type/id pair)
+
+        :param entity_type: A Shotgun entity type
+        :param entity_id: A Shotgun entity id
+        :param primary_only: Only return items marked as primary
+        :param cursor: Database cursor to use. The caller is responsible for closing it.
         :returns: A path on disk
         """
         
@@ -1367,30 +1368,31 @@ class PathCache(object):
         
         # use built in cursor unless specifically provided - means this
         # is part of a larger transaction
-        c = cursor or self._connection.cursor()
-        
-        try:
-            if primary_only:
-                res = c.execute("SELECT root, path FROM path_cache WHERE entity_type = ? AND entity_id = ? and primary_entity = 1", (entity_type, entity_id))
-            else:
-                res = c.execute("SELECT root, path FROM path_cache WHERE entity_type = ? AND entity_id = ?", (entity_type, entity_id))
-    
-            for row in res:
-                root_name = row[0]
-                relative_path = row[1]
-                
-                root_path = self._roots.get(root_name)
-                if not root_path:
-                    # The root name doesn't match a recognized name, so skip this entry
-                    continue
-                
-                # assemble path
-                path_str = self._dbpath_to_path(root_path, relative_path)
-                paths.append(path_str)
-        finally:        
-            if cursor is None:
-                c.close()
-        
+        if primary_only:
+            res = cursor.execute(
+                "SELECT root, path FROM path_cache WHERE "
+                "entity_type = ? AND entity_id = ? and primary_entity = 1",
+                (entity_type, entity_id)
+            )
+        else:
+            res = cursor.execute(
+                "SELECT root, path FROM path_cache WHERE "
+                "entity_type = ? AND entity_id = ?", (entity_type, entity_id)
+            )
+
+        for row in res:
+            root_name = row[0]
+            relative_path = row[1]
+
+            root_path = self._roots.get(root_name)
+            if not root_path:
+                # The root name doesn't match a recognized name, so skip this entry
+                continue
+
+            # assemble path
+            path_str = self._dbpath_to_path(root_path, relative_path)
+            paths.append(path_str)
+
         return paths
 
     def get_entity(self, path, cursor=None):
@@ -1425,16 +1427,15 @@ class PathCache(object):
 
         # use built in cursor unless specifically provided - means this
         # is part of a larger transaction
-        c = cursor or self._connection.cursor()        
-
-        try:
+        with self._transaction() as c:
             db_path = self._path_to_dbpath(relative_path)
-            res = c.execute("SELECT entity_type, entity_id, entity_name FROM path_cache WHERE path = ? AND root = ? and primary_entity = 1", (db_path, root_path))
+            res = c.execute(
+                "SELECT entity_type, entity_id, entity_name FROM path_cache WHERE "
+                "path = ? AND root = ? and primary_entity = 1",
+                (db_path, root_path)
+            )
             data = list(res)
-        finally:
-            if cursor is None:
-                c.close()
-        
+
         if len(data) > 1:
             # never supposed to happen!
             raise TankError("More than one entry in path database for %s!" % path)
@@ -1442,7 +1443,7 @@ class PathCache(object):
             # convert to string, not unicode!
             type_str = str(data[0][0])
             name_str = str(data[0][2])
-            return {"type": type_str, "id": data[0][1], "name": name_str }
+            return {"type": type_str, "id": data[0][1], "name": name_str}
         else:
             return None
 
@@ -1466,13 +1467,10 @@ class PathCache(object):
             # eg. doesn't belong to the project
             return []
 
-        c = self._connection.cursor()
-        try:
+        with self._transaction() as c:
             db_path = self._path_to_dbpath(relative_path)
             res = c.execute("SELECT entity_type, entity_id, entity_name FROM path_cache WHERE path = ? AND root = ? and primary_entity = 0", (db_path, root_path))
             data = list(res)
-        finally:
-            c.close()
 
         matches = []
         for d in data:        
@@ -1518,9 +1516,7 @@ class PathCache(object):
         sg_data = None
                 
         
-        cursor = self._connection.cursor()
-
-        try:
+        with self._transaction() as c:
             # get all records and check each one against shotgun.
             pc_data = list(cursor.execute("""select pc.rowid,
                                                     pc.entity_type, 
@@ -1530,8 +1526,6 @@ class PathCache(object):
                                                     pc.path, 
                                                     pc.primary_entity 
                                              from path_cache pc"""))
-        finally:
-            cursor.close()
         
         log.info("")
         log.info("Step 2 - Loading path cache data...")

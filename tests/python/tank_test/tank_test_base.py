@@ -12,6 +12,8 @@
 Base class for engine and app testing
 """
 
+from __future__ import with_statement
+
 import sys
 import os
 import time
@@ -400,9 +402,8 @@ class TankTestBase(unittest.TestCase):
             sgtk.set_authenticated_user(self._authenticated_user)
 
             # get rid of path cache from local ~/.shotgun storage
-            pc = path_cache.PathCache(self.tk)
-            path_cache_file = pc._get_path_cache_location()
-            pc.close()
+            with path_cache.PathCache(self.tk) as pc:
+                path_cache_file = pc._get_path_cache_location()
             if os.path.exists(path_cache_file):
                 os.remove(path_cache_file)
 
@@ -571,7 +572,6 @@ class TankTestBase(unittest.TestCase):
             entity["name"] = entity["code"]
 
         path_cache = tank.path_cache.PathCache(self.tk)
-
         data = [ {"entity": {"id": entity["id"],
                              "type": entity["type"],
                              "name": entity["name"]},
@@ -579,10 +579,6 @@ class TankTestBase(unittest.TestCase):
                   "path": path,
                   "primary": True } ]
         path_cache.add_mappings(data, None, [])
-
-        # On windows path cache has persisted, interfering with teardowns, so get rid of it.
-        path_cache.close()
-        del(path_cache)
 
     def debug_dump(self):
         """
@@ -598,11 +594,9 @@ class TankTestBase(unittest.TestCase):
         print "Path Cache contents:"
 
         path_cache = tank.path_cache.PathCache(self.tk)
-        c = path_cache._connection.cursor()
-        for x in list(c.execute("select * from path_cache" )):
-            print x
-        c.close()
-        path_cache.close()
+        with path_cache._transaction() as c:
+            for x in list(c.execute("select * from path_cache")):
+                print x
 
         print "-----------------------------------------------------------------------------"
         print ""
@@ -770,8 +764,8 @@ def _move_data(path):
         except WindowsError:
             # On windows intermittent problems with sqlite db file occur
             tk = sgtk.sgtk_from_path(path)
-            pc = path_cache.PathCache(tk)
-            db_path = pc._get_path_cache_location()
+            with path_cache.PathCache(tk) as pc:
+                db_path = pc._get_path_cache_location()
             if os.path.exists(db_path):
                 print 'Removing db %s' % db_path
                 # Importing pdb allows the deletion of the sqlite db sometimes...
