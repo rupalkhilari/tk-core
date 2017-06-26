@@ -16,6 +16,7 @@ Environment Settings Object and access.
 import os
 import sys
 import copy
+import pprint
 
 from tank_vendor import yaml
 from .bundle import resolve_default_value
@@ -1324,22 +1325,85 @@ class CompoundEnvironment(InstalledEnvironment):
     def __update_value(self, settings, new_key, new_value):
         """
         Patch an existing setttings dict with some new stuff
+
+        {   'shotgun_fields_hook': '{self}/shotgun_fields.py',
+            'actions_hook': '{self}/general_actions.py',
+            'action_mappings': {'PublishedFile': [{'actions': ['publish_clipboard'], 'filters': {}}],
+            'Task': [{'actions': ['assign_task', 'task_to_ip'], 'filters': {}}],
+            'Version': [{'actions': ['quicktime_clipboard', 'sequence_clipboard'],
+            'filters': {}}]}
+        }
+
+        action_mappings: {'+PublishedFile': [{'filters': {'published_file_type': 'Alembic Cache'},
+            'actions': ['new_actions']}]
+        }
+
         """
-        logger.debug("override! settings: %s" % settings)
-        logger.debug("override %s:%s" % (new_key, new_value))
+        logger.debug("Applying override %s:%s" % (new_key, pprint.pformat(new_value)))
+        logger.debug("Value before override:\n%s" % pprint.pformat(settings))
+
+        self.__update_value_r(settings, new_key, new_value)
+
+        logger.debug("Value after override:\n%s" % pprint.pformat(settings))
+
+
+    def __update_value_r(self, settings, new_key, new_value):
+
+        if new_key.startswith("+"):
+            # append
+            key_name = new_key[1:]
+            if key_name not in settings:
+                # append new value
+                settings[key_name] = new_value
+
+            elif isinstance(new_value, basestring):
+                if not isinstance(settings[key_name], basestring):
+                    raise TankError("Cannot append str to non-str datatype!")
+                logger.debug("Appending %s to %s:%s" % (new_value, key_name, settings[key_name]))
+                settings[key_name] += new_value
+
+            elif isinstance(new_value, list):
+                if not isinstance(settings[key_name], list):
+                    raise TankError("Cannot append list to non-list datatype!")
+                logger.debug("Appending %s to %s:%s" % (new_value, key_name, settings[key_name]))
+                settings[key_name].extend(new_value)
+
+            else:
+                raise TankError("data type does not support append!")
+
+        else:
+            # replace/create/recurse
+            if new_key in settings and type(new_value) != type(settings[new_key]):
+                raise TankError("Type mismatch during update")
+
+            if isinstance(new_value, dict):
+                if new_key not in settings:
+                    # insert new key
+                    settings[new_key] = new_value
+                else:
+                    # value already there.
+                    # process each sub item
+                    for sub_key, sub_value in new_value.iteritems():
+                        self.__update_value_r(settings[new_key], sub_key, sub_value)
+
+            else:
+                # update
+                settings[new_key] = new_value
 
     def __add_new_framework(self, name, settings):
         """
         Add a brand new framework
         """
-
+        logger.debug("Add new fw %s" % name)
 
     def __add_new_engine(self, name, settings):
         """
         Add a brand new engine
         """
+        logger.debug("Add new engine %s" % name)
 
     def __add_new_app(self, engine_name, name, settings):
         """
         Add a brand new app
         """
+        logger.debug("Add new app %s %s" % (engine_name, name))
