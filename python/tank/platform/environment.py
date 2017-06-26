@@ -42,13 +42,15 @@ class Environment(object):
     WritableEnvironment instance instead.
     """
 
-    def __init__(self, env_path, context=None):
+    def __init__(self, env_path, context=None, resolve_locations=True):
         """
         :param env_path: Path to the environment file
         :param context: Optional context object. If this is omitted,
                         context-based include file resolve will be
                         skipped.
         """
+        self.resolve_locations = resolve_locations
+
         self._env_path = env_path
         self._env_data = None
         
@@ -103,13 +105,17 @@ class Environment(object):
         self.__engine_locations = {}
         self.__app_locations = {}
         self.__framework_locations = {}
-        self.__extract_locations()
+        if self.resolve_locations:
+            self.__extract_locations()
 
     def __is_item_disabled(self, settings):
         """
         handles the checks to see if an item is disabled
         """
         descriptor_dict = settings.get(constants.ENVIRONMENT_LOCATION_KEY)
+
+        if descriptor_dict is None:
+            return False
 
         # Check for disabled and deny_platforms
         is_disabled = descriptor_dict.get("disabled", False)
@@ -1230,3 +1236,110 @@ class WritableEnvironment(InstalledEnvironment):
 
         return modified
 
+
+
+class CompoundEnvironment(InstalledEnvironment):
+
+
+    def __init__(self, env_path, pipeline_config, context=None):
+        """
+        :param env_path: Path to the environment file
+        :param pipeline_config: Pipeline configuration assocaited with the installed environment
+        :param context: Optional context object. If this is omitted,
+                        context-based include file resolve will be
+                        skipped.
+        """
+        super(CompoundEnvironment, self).__init__(env_path, pipeline_config, context)
+        self.__merge(context)
+
+    def __merge(self, context):
+        """
+        Merge envs
+        """
+
+        logger.debug("Begin merge in external environment overrides")
+
+        path = "/Users/manne/Documents/work_dev/toolkit/tk-config-override_test/env/project.yml"
+
+        override_env = Environment(path, context, False)
+        logger.debug("loaded env: %s" % override_env)
+
+        # recurse down and apply overrides:
+        for engine in override_env.get_engines():
+
+            engine_overrides = override_env.get_engine_settings(engine)
+            if engine_overrides:
+
+                # access the engine instance in the main config
+                try:
+                    settings = self.get_engine_settings(engine)
+                except TankError, e:
+                    # We are adding something brand new
+                    self.__add_new_engine(engine, engine_overrides)
+                else:
+                    # engine exists already -
+                    # add each parameter
+                    for setting_key, setting_value in engine_overrides.iteritems():
+                        self.__update_value(settings, setting_key, setting_value)
+
+            # now check each app override inside the engine
+            for app in override_env.get_apps(engine):
+
+                app_overrides = override_env.get_app_settings(engine, app)
+                if app_overrides:
+
+                    # see if it exists in the main config
+                    try:
+                        settings = self.get_app_settings(engine, app)
+                    except TankError, e:
+                        # We are adding something brand new
+                        self.__add_new_app(engine, app, app_overrides)
+                    else:
+                        # app exists already -
+                        # add each override parameter
+                        for setting_key, setting_value in app_overrides.iteritems():
+                            self.__update_value(settings, setting_key, setting_value)
+
+        # lastly check frameworks
+        for framework in override_env.get_frameworks():
+
+            framework_overrides = override_env.get_framework_settings(engine)
+            if framework_overrides:
+
+                # access the engine instance in the main config
+                try:
+                    settings = self.get_framework_settings(engine)
+                except TankError, e:
+                    # We are adding something brand new
+                    self.__add_new_framework(framework, engine_overrides)
+                else:
+                    # engine exists already -
+                    # add each parameter
+                    for setting_key, setting_value in framework_overrides.iteritems():
+                        self.__update_value(settings, setting_key, setting_value)
+
+        logger.debug("Now validate all settings")
+
+
+    def __update_value(self, settings, new_key, new_value):
+        """
+        Patch an existing setttings dict with some new stuff
+        """
+        logger.debug("override! settings: %s" % settings)
+        logger.debug("override %s:%s" % (new_key, new_value))
+
+    def __add_new_framework(self, name, settings):
+        """
+        Add a brand new framework
+        """
+
+
+    def __add_new_engine(self, name, settings):
+        """
+        Add a brand new engine
+        """
+
+    def __add_new_app(self, engine_name, name, settings):
+        """
+        Add a brand new app
+        """
