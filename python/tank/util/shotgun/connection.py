@@ -16,7 +16,7 @@ from __future__ import with_statement
 
 import os
 import threading
-from . import urlparse27
+import urlparse
 
 # use api json to cover py 2.5
 from tank_vendor import shotgun_api3
@@ -226,7 +226,11 @@ def sanitize_url(server_url):
     server_url = server_url.strip()
 
     # Then break up the url into chunks
-    parsed_url = urlparse27.urlparse(server_url)
+    parsed_url = urlparse.urlparse(server_url)
+
+    # FIXME: Python 2.6.x has difficulty parsing a URL that doesn't start with a scheme when there
+    # is already a port number. Python 2.7 doesn't have this issue. Ignore this bug for now since it
+    # is very unlikely Shotgun will be running off a custom port.
 
     # The given url https://192.168.1.250:30/path?a=b is parsed such that
     # scheme => https
@@ -238,7 +242,7 @@ def sanitize_url(server_url):
     # network location
 
     # Then extract the good parts from the url
-    clean_url = urlparse27.ParseResult(
+    clean_url = urlparse.ParseResult(
         # We want https when there is no specified scheme.
         scheme=parsed_url.scheme or "https",
         # If only a host has been provided, path will be set.
@@ -247,7 +251,7 @@ def sanitize_url(server_url):
         path="", params="", query="", fragment=""
     )
 
-    return urlparse27.urlunparse(clean_url)
+    return urlparse.urlunparse(clean_url)
 
 
 def get_associated_sg_base_url():
