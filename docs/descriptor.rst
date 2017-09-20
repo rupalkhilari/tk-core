@@ -346,7 +346,7 @@ CoreDescriptor
 Exceptions
 ================================================
 
-.. autoclass:: TankAppStoreConnectionError
+.. autoclass:: TankDescriptorError
     :show-inheritance:
     :inherited-members:
     :members:
@@ -356,12 +356,32 @@ Exceptions
     :inherited-members:
     :members:
 
-.. autoclass:: TankDescriptorError
+.. autoclass:: TankAppStoreConnectionError
     :show-inheritance:
     :inherited-members:
     :members:
 
-.. autoclass:: CheckVersionConstraintsError
+.. autoclass:: TankInvalidAppStoreCredentialsError
+    :show-inheritance:
+    :inherited-members:
+    :members:
+
+.. autoclass:: TankInvalidAppStoreCredentialsError
+    :show-inheritance:
+    :inherited-members:
+    :members:
+
+.. autoclass:: TankCheckVersionConstraintsError
+    :show-inheritance:
+    :inherited-members:
+    :members:
+
+.. autoclass:: TankInvalidInterpreterLocationError
+    :show-inheritance:
+    :inherited-members:
+    :members:
+
+.. autoclass:: TankMissingManifestError
     :show-inheritance:
     :inherited-members:
     :members:
